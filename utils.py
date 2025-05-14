@@ -15,7 +15,7 @@ def load_txt(input_dir, merge_list=False):
     return ans
 
 def write_txt(info_list, out_dir):
-    with open(out_dir, 'w') as f:
+    with open(out_dir, 'w', encoding='UTF-8') as f:
         writer = csv.writer(f, delimiter='\t')
         writer.writerows(info_list)
 

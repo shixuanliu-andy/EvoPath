@@ -12,6 +12,7 @@ from scipy.sparse import csr_matrix, identity
 from copy import deepcopy
 from sklearn.linear_model import Lasso
 from sklearn.metrics import roc_curve, auc, average_precision_score
+import ast 
 
 
 
@@ -42,7 +43,8 @@ class RuleDataset:
         tmp=[]
         for rel in self.target_heads:
             path_count = sparse.dok_matrix((self.e_num, self.e_num))
-            for body, conf in self.rules[rel]:
+            for body, conf in self.rules[rel].items():
+                if body == [] or body == (): continue
                 body_adj = sparse.eye(self.e_num) * self.start_matrices[body[1].replace(" ", "")]
                 for i in body[3::2]:
                     body_adj = body_adj * self.matrices[i.replace(" ", "")]
@@ -53,9 +55,10 @@ class RuleDataset:
     def __getitem__(self, idx):
         path_count = sparse.dok_matrix((self.e_num,self.e_num))
         rel = self.idx2rel[idx].replace("inv_","")
-        for body, conf in self.rules[rel]:
+        for body, conf in self.rules[rel].items():
+            if body == [] or body == (): continue
             body_adj = sparse.eye(self.e_num) * self.start_matrices[body[1]]
-            for i in body[2::2]:
+            for i in body[3::2]:
                 body_adj = body_adj * self.matrices[i.replace(" ","")]
             path_count += body_adj * conf
         return (rel, path_count)
@@ -81,29 +84,33 @@ class Prediction:
         if 'lp' in args.task:
             self.gen_dataset_lp()
 
-
-    def load_metapaths(self):
-        self.metapaths = {};self.metapaths_conf={}
-        files=[f"{self.target_heads}-{self.max_length}.json"]
+    def load_metapath_lp(self):
+        self.metapaths = {}
+        self.metapaths_conf = {}
+        file = f"{self.target_heads}-{self.max_length}.json"
         id=0
-        for file in files:
-
-            metapaths_gen=load_json(f"{self.path_rank_gen}{file}")
-            metapaths_sam=load_json(f"{self.path_rank}{file}")
-    
-            for key,val in metapaths_gen.items():
-                self.metapaths[key]=id;self.metapaths_conf[id]=val[0];id+=1
-            for key1,val1 in metapaths_sam.items():
-                if key1 in self.metapaths.keys():
-                    continue
-                self.metapaths[key1]=id;self.metapaths_conf[id]=val1[0];id+=1
-            
+        metapaths=load_json(f"{self.path_rank}{file}")
+        for key,val in metapaths.items():
+            self.metapaths[key]=id;self.metapaths_conf[id]=val[0];id+=1
         self.logger.info(f"Load {len(self.metapaths)} meta-path for rel {self.target_heads}")
-           
+   
+    def load_metapath_kbc(self):
+        self.metapaths = defaultdict(dict)
+        self.metapaths_conf = defaultdict(dict)
+        if type(self.target_heads) == str:
+            files=[f"{self.target_heads}-{self.max_length}.json"]
+        elif type(self.target_heads) == list:
+            files=[f"{i}-{self.max_length}.json" for i in self.target_heads]
+        for file,head in zip(files,self.target_heads):
+            metapaths=load_json(f"{self.path_rank}{file}")
+            for key,val in metapaths.items():
+                key = tuple(ast.literal_eval(key))
+                self.metapaths[head][key]=val[0]+val[1]
+        # self.logger.info(f"Load {len(self.metapaths)} meta-path for rel {self.target_heads}")
 
     def KGC(self, pred_num=5000):
         self.logger.info(f"prediction:{self.data_set}  thresold:{self.thresold}" )
-        self.load_metapaths()
+        self.load_metapath_kbc()
 
         rule_dataset = RuleDataset(self.target_heads,self.fact_rdf+self.train_rdf+self.valid_rdf, self.test_rdf,
                                    self.metapaths, self.ent2idx, self.rdict.idx2rel, self.data_dir)
@@ -112,15 +119,12 @@ class Prediction:
         rule_loader = DataLoader(rule_dataset, batch_size=2, num_workers=num_workers, collate_fn=RuleDataset.collate_fn)
         print('Getting Scores')
         scores = dict(chain.from_iterable([list(zip(rel, path_count)) for _, (rel, path_count) in tqdm(enumerate(rule_loader))]))
-        scores=rule_dataset.get_adj()
-
-        hit_1s, hit_10s, mrrs = {}, {}, {}; hit_1s_p, hit_10s_p, mrrs_p = {}, {}, {}
+        # scores = rule_dataset.get_adj()
 
         hit_1, hit_10, mrr = defaultdict(list), defaultdict(list), defaultdict(list)
         hit_1_p, hit_10_p, mrr_p = defaultdict(list), defaultdict(list), defaultdict(list)
 
         test_rdf = random.sample(self.test_rdf, pred_num) if len(self.test_rdf)>pred_num else self.test_rdf
-
 
         for i, rdf in tqdm(enumerate(test_rdf)):
             (q_h, q_r, q_t) = parse_triple(rdf)
@@ -155,7 +159,7 @@ class Prediction:
     def Link_Prediction(self,regress_split=0.6):
         aps, AUCs = [], []
         
-        self.load_metapaths() 
+        self.load_metapath_lp() 
         self.metapaths_connects = {v: self.cal_metapath_connect(u) for u, v in tqdm(self.metapaths.items())}
         metapaths_connects = {i: {(j, k): l for [j, k, l] in t} for i, t in self.metapaths_connects.items()}
         
@@ -242,23 +246,28 @@ class Prediction:
         graph_dict = defaultdict(csr_matrix)
         meta_path=meta_path.replace("'","").replace(" ","").replace("[","").replace("]","").split(",")
         idx_list=[]
-        for i in range(len(meta_path)):
-            if i % 2 == 0:
-                idx_list.append(self.type2idx[meta_path[i]])
-            else:
-                idx_list.append(self.rel2idx[meta_path[i]])
+        try:
+            for i in range(len(meta_path)):
+                if i % 2 == 0:
+                    idx_list.append(self.type2idx[meta_path[i]])
+                else:
+                    idx_list.append(self.rel2idx[meta_path[i]])
 
-        for i in range(len(meta_path)):
-            row, col, data = [], [], []
-            if i % 2 == 1:  
-                for [src, tgt] in self.dataset.graph_r2ht_idx[idx_list[i]]: 
-                    if src in self.type_dict[idx_list[i-1]] and tgt in self.type_dict[idx_list[i+1]]:
-                        row.append(src);col.append(tgt);data.append(1.0)
-                graph_dict[i] = csr_matrix((deepcopy(data), (deepcopy(row), deepcopy(col))),
-                                                  shape=(self.N, self.N))
-        result = identity(self.N)
-        for val in graph_dict.values():
-            result = result * val
-        result = np.concatenate([result.nonzero(), result.data.reshape(1, -1)]).astype(int).T.tolist()
+            for i in range(len(meta_path)):
+                row, col, data = [], [], []
+                if i % 2 == 1:  
+                    for [src, tgt] in self.dataset.graph_r2ht_idx[idx_list[i]]: 
+                        if src in self.type_dict[idx_list[i-1]] and tgt in self.type_dict[idx_list[i+1]]:
+                            row.append(src);col.append(tgt);data.append(1.0)
+                    graph_dict[i] = csr_matrix((deepcopy(data), (deepcopy(row), deepcopy(col))),
+                                                    shape=(self.N, self.N))
+            result = identity(self.N)
+            for val in graph_dict.values():
+                result = result * val
+            result = np.concatenate([result.nonzero(), result.data.reshape(1, -1)]).astype(int).T.tolist()
+        except:
+            zero_matrix = csr_matrix((self.N, self.N))
+            result = np.concatenate([zero_matrix.nonzero(), zero_matrix.data.reshape(1, -1)]).astype(int).T.tolist()
+            return tuple(result)
         return tuple(result)
 

@@ -1,4 +1,3 @@
-import json
 import os
 from utils import load_txt, parse_triple,load_json,load_type,write_json,write_txt,get_model_path
 from collections import defaultdict
@@ -6,15 +5,15 @@ import random
 from copy import deepcopy
 from tqdm import tqdm
 from itertools import product
-from typetree import typetree
 from difflib import get_close_matches
 import torch 
 from transformers import LlamaTokenizer, LlamaForCausalLM
 
 
+
 def load_paths(paths):
     res=[]
-    with open(paths,'r') as fin:
+    with open(paths,'r',encoding='utf-8') as fin:
         for i in fin.readlines():
             res.append(i.strip().split())
     ent_ser=[]
@@ -71,7 +70,7 @@ class Dataset(object):
         write_json(self.rdict.rel2idx,os.path.join(root, "relations.json"))
 
         # Fact Triples
-        fact_file = "fact.txt"
+        fact_file = "facts.txt"
         fact = load_txt(data_dir+fact_file)
         self.fact_rdf = random.sample(fact, int(len(fact)*sparsity)) #采样的密度
         # Graph Triples
@@ -123,8 +122,10 @@ class Dataset(object):
     def bfs_sample(self,max_length,num,path_example,target_head):
         self.max_length = max_length
         self.target_head = target_head
-        instance_paths=[];save_paths=[]
+        instance_paths=[]
+        self.save_paths=[]
         target_head =[target_head] if type(target_head) == str else target_head
+        
         for head in target_head:
             sampled_rdf=self.rel2rdf[head] if len(self.rel2rdf[head]) < num else random.sample(self.rel2rdf[head], num)
             for rdf in tqdm(sampled_rdf, desc="Sampling instance_paths"):
@@ -161,10 +162,10 @@ class Dataset(object):
                 self.meta_path[head].extend(meta_seq)
             write_txt(self.meta_path[head],path_example +head+f'-{self.max_length}.txt')  
             instance_paths.append(path_example +head+f'-{self.max_length}.txt')
-            save_paths.append(f"results/{self.data_set}/metapath/{head}-{self.max_length}.txt")
+            self.save_paths.append(f"results/{self.data_set}/metapath/{head}-{self.max_length}.txt")
             self.logger.info(f'Sample {len(self.meta_path[head])} instance paths for {head}') 
         
-        for instance_path,save_path in zip(instance_paths,save_paths):
+        for instance_path,save_path in zip(instance_paths,self.save_paths):
             self.generate_metapath(paths=instance_path,
                                    ent2type=self.ent2type,
                                    save_path=save_path)  
@@ -172,8 +173,6 @@ class Dataset(object):
         return self.meta_path
     
     def generate_metapath(self,paths,ent2type,save_path,MAX_TYPE=2,mode='NELL'):
-        if mode!='NELL':
-            tree=typetree()
         ent_ser,rel_ser=load_paths(paths)
 
         type_num={}
@@ -192,13 +191,7 @@ class Dataset(object):
             typeinfo_unit=[]
             for e in ent:
                 typelist=ent2type[e]
-                if mode!='NELL':
-                    res=tree.filter_typelist(typelist)
-                    candidate_set=set([])
-                    for pp in res:
-                        candidate_set.add(pp[-1])
-                else:
-                    candidate_set=set(typelist.copy())
+                candidate_set=set(typelist.copy())
                 if len(candidate_set)>MAX_TYPE:
                     sorted_ty=[(i,type_num[i]) for i in candidate_set]
                     sorted_ty=sorted(sorted_ty,key=lambda x:x[1],reverse=True)
@@ -224,6 +217,7 @@ class Dataset(object):
                         metapath[sk]=1
                 except TypeError:
                     print(tuple(metapath_u))
+        
         sort_metapath=sorted(metapath.items(),key=lambda x:x[1],reverse=True)
         with open(save_path,'w') as fin:
             wrt_str=['\t'.join(k)+'\t'+str(v) for k,v in sort_metapath]
@@ -243,6 +237,11 @@ class Dataset(object):
                 generate_metapaths.extend(metapaths.split("\n"))
             except:
                 continue
+        
+        with open(self.save_paths[0],'a') as fin:
+            wrt_str=['\t'.join(k)+'\t'+str(v) for k,v in generate_metapaths]
+            wrt_str='\n'.join(wrt_str)
+            fin.write(wrt_str)
         return generate_metapaths
 
     def metapath_llama(self, target_heads,examples):
